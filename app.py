@@ -72,22 +72,39 @@ st.divider()
 try:
     res = supabase.table("messages").select("*").order("created_at", desc=True).limit(20).execute()
     for m in res.data:
-        # Улучшенное отображение: Бабблы
         is_me = m['username'] == st.session_state.user.email
+        
+        # Настройки стиля
         align = "right" if is_me else "left"
-        color = "#e1f5fe" if is_me else "#f0f0f0"
+        # Используем более насыщенные цвета и принудительно черный текст
+        bg_color = "#DCF8C6" if is_me else "#FFFFFF"  # Светло-зеленый (как в WhatsApp) или белый
+        border = "1px solid #c2c2c2"
+        text_color = "#000000" # Всегда черный текст для видимости
         
         st.markdown(f"""
-            <div style="text-align: {align}; margin-bottom: 10px;">
-                <div style="display: inline-block; background: {color}; padding: 10px; border-radius: 15px; max-width: 80%; text-align: left;">
-                    <small style="color: gray;">{m['username']}</small><br>
-                    {m['content']}
+            <div style="text-align: {align}; margin-bottom: 15px;">
+                <div style="
+                    display: inline-block; 
+                    background-color: {bg_color}; 
+                    color: {text_color}; 
+                    padding: 12px 16px; 
+                    border-radius: 18px; 
+                    border: {border};
+                    max-width: 75%; 
+                    box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
+                    text-align: left;
+                ">
+                    <div style="font-size: 0.8em; color: #555; margin-bottom: 4px; font-weight: bold;">
+                        {m['username'].split('@')[0]}
+                    </div>
+                    <div style="font-size: 1em; line-height: 1.4;">
+                        {m['content']}
+                    </div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
 except Exception as e:
     st.error(f"Ошибка: {e}")
-
 # Автообновление
 time.sleep(5)
 st.rerun()
