@@ -52,7 +52,8 @@ def get_my_chat_list(my_username):
 # ЧАСТЬ 1: ВХОД / РЕГИСТРАЦИЯ
 # ==========================================
 if st.session_state.user is None:
-    login_placeholder = st.empty() # Изолированный контейнер для входа
+    # Здесь placeholder НУЖЕН, чтобы скрыть вход после успеха
+    login_placeholder = st.empty() 
     
     with login_placeholder.container():
         st.title("🔐 SkyChat: Вход")
@@ -65,7 +66,7 @@ if st.session_state.user is None:
                 try:
                     res = supabase.auth.sign_in_with_password({"email": e, "password": p})
                     st.session_state.user = res.user
-                    login_placeholder.empty() # Удаляем форму входа
+                    login_placeholder.empty() # Стираем форму входа
                     st.rerun()
                 except Exception as ex:
                     st.error(f"Ошибка: {ex}")
@@ -85,8 +86,9 @@ if st.session_state.user is None:
 # ЧАСТЬ 2: ПРИЛОЖЕНИЕ
 # ==========================================
 
-# Проверка профиля (если нет - создаем)
 my_profile = get_my_profile()
+
+# Если профиля нет — создаем (без placeholder, просто блокируем дальше)
 if not my_profile:
     st.title("📝 Ваш профиль")
     with st.form("init_profile"):
@@ -119,127 +121,122 @@ with st.sidebar:
         st.session_state.chat_with_user = None
         st.rerun()
 
-# --- ГЛАВНЫЙ ЭКРАН (С ОЧИСТКОЙ) ---
-main_placeholder = st.empty() # Главный "очиститель"
+# --- ГЛАВНЫЙ ЭКРАН ---
+# МЫ УБРАЛИ main_placeholder! 
+# Streamlit сам очищает экран при переключении radio-кнопки (st.rerun происходит автоматически).
 
-with main_placeholder.container():
+# 1. ПРОФИЛЬ
+if menu == "Профиль":
+    st.header("⚙️ Настройки")
+    
+    with st.form("edit_profile_form"):
+        new_dn = st.text_input("Имя", value=my_profile['display_name'])
+        new_un = st.text_input("Юзернейм", value=my_profile['username']).lower().strip()
+        
+        # Добавил key, чтобы кнопка была уникальной
+        submitted = st.form_submit_button("Сохранить изменения")
+        
+        if submitted:
+            try:
+                supabase.table("profiles").update({
+                    "display_name": new_dn,
+                    "username": new_un
+                }).eq("id", st.session_state.user.id).execute()
+                
+                st.toast("✅ Профиль обновлен!", icon="🎉")
+                time.sleep(1) # Небольшая пауза, чтобы увидеть тост
+                st.rerun()
+            except Exception as e:
+                st.error("Ошибка: скорее всего юзернейм занят.")
 
-    # 1. ПРОФИЛЬ
-    if menu == "Профиль":
-        st.header("⚙️ Настройки")
-        # Форма изолирует состояние кнопок
-        with st.form("edit_profile_form"):
-            new_dn = st.text_input("Имя", value=my_profile['display_name'])
-            new_un = st.text_input("Юзернейм", value=my_profile['username']).lower().strip()
-            
-            # Кнопка внутри формы
-            submitted = st.form_submit_button("Сохранить изменения")
-            
-            if submitted:
-                try:
-                    supabase.table("profiles").update({
-                        "display_name": new_dn,
-                        "username": new_un
-                    }).eq("id", st.session_state.user.id).execute()
-                    
-                    # Используем toast вместо success+sleep, чтобы не было фризов
-                    st.toast("✅ Профиль успешно обновлен!", icon="🎉")
-                    # Быстрый перезапуск без задержки
+# 2. ПОИСК
+elif menu == "Поиск":
+    st.header("🔍 Поиск людей")
+    
+    with st.form("search_form"):
+        q = st.text_input("Введите юзернейм", key="search_input").lower().strip()
+        search_btn = st.form_submit_button("Найти")
+    
+    if search_btn and q:
+        res = supabase.table("profiles").select("*").eq("username", q).execute()
+        if res.data:
+            st.session_state['search_res'] = res.data[0]
+        else:
+            st.session_state['search_res'] = None
+            st.error("Пользователь не найден")
+    
+    if 'search_res' in st.session_state and st.session_state['search_res']:
+        found = st.session_state['search_res']
+        if found['username'] != my_profile['username']:
+            st.success(f"Найдено: **{found['display_name']}**")
+            if st.button(f"Написать @{found['username']}", key=f"start_{found['username']}"):
+                st.session_state.chat_with_user = found
+                del st.session_state['search_res']
+                st.toast("Чат добавлен!", icon="🚀")
+                st.rerun()
+        else:
+            st.info("Это вы :)")
+
+# 3. ЧАТЫ
+elif menu == "Чаты":
+    st.header("💬 Диалоги")
+    contacts = get_my_chat_list(my_profile['username'])
+    
+    c1, c2 = st.columns([1, 2.5])
+    
+    with c1:
+        st.caption("Контакты")
+        if not contacts:
+            st.info("Пусто")
+        for c in contacts:
+            is_active = (st.session_state.chat_with_user and st.session_state.chat_with_user['username'] == c)
+            # Кнопки контактов
+            if st.button(f"👤 {c}", key=f"chat_{c}", use_container_width=True, type="primary" if is_active else "secondary"):
+                res = supabase.table("profiles").select("*").eq("username", c).execute()
+                if res.data:
+                    st.session_state.chat_with_user = res.data[0]
                     st.rerun()
-                except Exception as e:
-                    st.error("Ошибка: скорее всего юзернейм занят.")
-
-    # 2. ПОИСК
-    elif menu == "Поиск":
-        st.header("🔍 Поиск людей")
-        
-        with st.form("search_form"):
-            q = st.text_input("Введите юзернейм", key="search_input").lower().strip()
-            search_btn = st.form_submit_button("Найти")
-        
-        if search_btn and q:
-            res = supabase.table("profiles").select("*").eq("username", q).execute()
-            if res.data:
-                st.session_state['search_res'] = res.data[0]
-            else:
-                st.session_state['search_res'] = None
-                st.error("Пользователь не найден")
-        
-        # Результат поиска (рисуем вне формы)
-        if 'search_res' in st.session_state and st.session_state['search_res']:
-            found = st.session_state['search_res']
-            if found['username'] != my_profile['username']:
-                st.success(f"Найдено: **{found['display_name']}**")
-                if st.button(f"Написать @{found['username']}", key=f"start_{found['username']}"):
-                    st.session_state.chat_with_user = found
-                    del st.session_state['search_res'] # Очищаем поиск
-                    st.toast("Чат добавлен! Переходим...", icon="🚀")
-                    st.rerun() # Мгновенный переход
-            else:
-                st.info("Это вы :)")
-
-    # 3. ЧАТЫ
-    elif menu == "Чаты":
-        st.header("💬 Диалоги")
-        contacts = get_my_chat_list(my_profile['username'])
-        
-        c1, c2 = st.columns([1, 2.5])
-        
-        with c1:
-            st.caption("Контакты")
-            if not contacts:
-                st.info("Пусто")
-            for c in contacts:
-                # Выделяем активный чат цветом (primary/secondary)
-                is_active = (st.session_state.chat_with_user and st.session_state.chat_with_user['username'] == c)
-                if st.button(f"👤 {c}", key=f"chat_{c}", use_container_width=True, type="primary" if is_active else "secondary"):
-                    res = supabase.table("profiles").select("*").eq("username", c).execute()
-                    if res.data:
-                        st.session_state.chat_with_user = res.data[0]
-                        st.rerun()
-        
-        with c2:
-            target = st.session_state.chat_with_user
-            if target:
-                st.subheader(f"Чат с {target['display_name']}")
+    
+    with c2:
+        target = st.session_state.chat_with_user
+        if target:
+            st.subheader(f"Чат с {target['display_name']}")
+            
+            with st.form("msg_form", clear_on_submit=True):
+                text = st.text_input("Сообщение...", key="msg_text")
+                send = st.form_submit_button("Отправить")
                 
-                # Поле ввода
-                with st.form("msg_form", clear_on_submit=True):
-                    text = st.text_input("Сообщение...", key="msg_text")
-                    send = st.form_submit_button("Отправить")
-                    
-                    if send and text.strip():
-                        supabase.table("direct_messages").insert({
-                            "sender_id": st.session_state.user.id,
-                            "sender_username": my_profile['username'],
-                            "recipient_username": target['username'],
-                            "content": text.strip()
-                        }).execute()
-                        st.rerun()
+                if send and text.strip():
+                    supabase.table("direct_messages").insert({
+                        "sender_id": st.session_state.user.id,
+                        "sender_username": my_profile['username'],
+                        "recipient_username": target['username'],
+                        "content": text.strip()
+                    }).execute()
+                    st.rerun()
+            
+            try:
+                msgs = supabase.table("direct_messages").select("*").or_(
+                    f"and(sender_username.eq.{my_profile['username']},recipient_username.eq.{target['username']}),"
+                    f"and(sender_username.eq.{target['username']},recipient_username.eq.{my_profile['username']})"
+                ).order("created_at", desc=True).limit(50).execute()
                 
-                # Сообщения
-                try:
-                    msgs = supabase.table("direct_messages").select("*").or_(
-                        f"and(sender_username.eq.{my_profile['username']},recipient_username.eq.{target['username']}),"
-                        f"and(sender_username.eq.{target['username']},recipient_username.eq.{my_profile['username']})"
-                    ).order("created_at", desc=True).limit(50).execute()
-                    
-                    for m in msgs.data:
-                        is_me = m['sender_username'] == my_profile['username']
-                        align = "right" if is_me else "left"
-                        color = "#dcf8c6" if is_me else "#ffffff"
-                        st.markdown(f"""
-                        <div style="text-align:{align}; margin-bottom:5px;">
-                            <div style="display:inline-block; background:{color}; padding:8px 12px; border-radius:12px; border:1px solid #ddd; max-width:80%; text-align:left;">
-                                {m['content']}
-                            </div>
+                for m in msgs.data:
+                    is_me = m['sender_username'] == my_profile['username']
+                    align = "right" if is_me else "left"
+                    color = "#dcf8c6" if is_me else "#ffffff"
+                    st.markdown(f"""
+                    <div style="text-align:{align}; margin-bottom:5px;">
+                        <div style="display:inline-block; background:{color}; padding:8px 12px; border-radius:12px; border:1px solid #ddd; max-width:80%; text-align:left;">
+                            {m['content']}
                         </div>
-                        """, unsafe_allow_html=True)
-                except:
-                    st.error("Ошибка загрузки")
-            else:
-                st.info("Выберите чат слева")
+                    </div>
+                    """, unsafe_allow_html=True)
+            except:
+                st.error("Ошибка загрузки")
+        else:
+            st.info("Выберите чат слева")
 
-# Фоновое обновление (не блокирует интерфейс)
+# Фоновое обновление
 time.sleep(5)
 st.rerun()
