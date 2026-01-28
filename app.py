@@ -2,6 +2,7 @@ import streamlit as st
 from supabase import create_client
 import time
 from datetime import datetime, timezone, timedelta
+from collections import Counter
 
 # --- 1. КОНФИГУРАЦИЯ ---
 try:
@@ -21,7 +22,6 @@ supabase = get_supabase()
 
 # --- 2. СОСТОЯНИЕ ---
 if "user" not in st.session_state: st.session_state.user = None
-# В chat_with_user мы храним весь объект профиля (id, username, display_name)
 if "chat_with_user" not in st.session_state: st.session_state.chat_with_user = None
 if "chat_with_group" not in st.session_state: st.session_state.chat_with_group = None
 if "edit_msg_id" not in st.session_state: st.session_state.edit_msg_id = None
@@ -70,6 +70,7 @@ def inject_custom_css():
         /* СКРОЛЛ ЧАТА */
         .msg-container {{ height: 68vh; overflow-y: auto; display: flex; flex-direction: column-reverse; gap: 8px; padding-right: 10px; padding-bottom: 10px; }}
         .msg-container::-webkit-scrollbar {{ width: 6px; }}
+        .msg-container::-webkit-scrollbar-track {{ background: transparent; }}
         .msg-container::-webkit-scrollbar-thumb {{ background: {t['border']}; border-radius: 3px; }}
         
         .msg-row {{ display: flex; width: 100%; }}
@@ -85,7 +86,7 @@ def inject_custom_css():
 
 inject_custom_css()
 
-# --- 4. DATA FUNCTIONS (ТЕПЕРЬ НА ID) ---
+# --- 4. DATA FUNCTIONS ---
 
 @st.cache_data(ttl=60)
 def get_profile_cached(user_id):
@@ -99,33 +100,42 @@ def update_heartbeat(user_id):
     except: pass
 
 def get_chat_list_by_id(my_id):
-    """Ищет собеседников по ID, а не по имени"""
     try:
-        # Выбираем ID всех, с кем я общался
         sent = supabase.table("direct_messages").select("recipient_id").eq("sender_id", my_id).execute()
         received = supabase.table("direct_messages").select("sender_id").eq("recipient_id", my_id).execute()
-        
         ids = set()
         for x in sent.data: 
             if x['recipient_id']: ids.add(x['recipient_id'])
         for x in received.data: 
             if x['sender_id']: ids.add(x['sender_id'])
-            
         if not ids: return []
-        
-        # Получаем профили этих людей (их актуальные имена)
         profiles = supabase.table("profiles").select("*").in_("id", list(ids)).execute()
         return profiles.data
     except: return []
 
 def get_groups_by_id(my_id):
-    """Ищет группы, где я состою, по моему ID"""
     try:
         m = supabase.table("group_members").select("group_id").eq("user_id", my_id).execute()
         if not m.data: return []
         ids = [x['group_id'] for x in m.data]
         return supabase.table("groups").select("*").in_("id", ids).execute().data
     except: return []
+
+def get_unread_counts(my_id):
+    """Считает непрочитанные сообщения для каждого собеседника"""
+    try:
+        # Берем все сообщения, где Я - получатель И is_read = false
+        res = supabase.table("direct_messages").select("sender_id")\
+            .eq("recipient_id", my_id)\
+            .eq("is_read", False).execute()
+        
+        # Считаем количество для каждого sender_id
+        if res.data:
+            # Создаем словарь {sender_id: count}
+            counts = Counter([msg['sender_id'] for msg in res.data])
+            return counts
+        return {}
+    except: return {}
 
 # --- 5. ФРАГМЕНТ СООБЩЕНИЙ ---
 
@@ -134,16 +144,13 @@ def render_messages(my_id, target_type, target_obj):
     messages = []
     
     if target_type == 'user':
-        # ЛОГИКА НА ID:
         target_id = target_obj['id']
-        
-        # Помечаем прочитанным
+        # Отмечаем прочитанным при открытии
         try: supabase.table("direct_messages").update({"is_read": True})\
             .eq("recipient_id", my_id).eq("sender_id", target_id).eq("is_read", False).execute()
         except: pass
         
         try:
-            # Загружаем сообщения, где (Я отправил ЕМУ) или (ОН отправил МНЕ) - по ID
             res = supabase.table("direct_messages").select("*")\
                 .or_(f"and(sender_id.eq.{my_id},recipient_id.eq.{target_id}),and(sender_id.eq.{target_id},recipient_id.eq.{my_id})")\
                 .order("created_at", desc=True).limit(50).execute()
@@ -151,7 +158,7 @@ def render_messages(my_id, target_type, target_obj):
         except: pass
 
     else:
-        # Группы (тут пока по group_id, всё ок)
+        # Группы
         gid = target_obj['id']
         try:
             res = supabase.table("group_messages").select("*").eq("group_id", gid).order("created_at", desc=True).limit(50).execute()
@@ -164,8 +171,8 @@ def render_messages(my_id, target_type, target_obj):
 
     html_content = '<div class="msg-container">'
     for m in messages:
-        # Проверка "Я ли это" теперь по ID (надежно!)
-        is_me = m['sender_id'] == my_id
+        sender_id = m.get('sender_id') 
+        is_me = (sender_id == my_id)
         
         row_cls = "row-me" if is_me else "row-other"
         bub_cls = "bubble-me" if is_me else "bubble-other"
@@ -173,7 +180,6 @@ def render_messages(my_id, target_type, target_obj):
         sender_div = ""
         if target_type == 'group' and not is_me:
             primary_col = THEMES[st.session_state.theme]['primary']
-            # В старых сообщениях может не быть username, но пока оставим как fallback
             name_show = m.get('sender_username', 'User')
             sender_div = f"<div style='font-size:12px; color:{primary_col}; font-weight:bold; margin-bottom:2px;'>{name_show}</div>"
         
@@ -199,14 +205,23 @@ def page_chats(profile):
         st.subheader("💬 Чаты")
         tab_dm, tab_grp = st.tabs(["Личные", "Группы"])
         
+        # Получаем счетчики непрочитанных (словарь)
+        unread_counts = get_unread_counts(my_id)
+        
         with tab_dm:
-            # Получаем СПИСОК ПРОФИЛЕЙ людей
             users = get_chat_list_by_id(my_id)
             if not users: st.caption("Пусто")
             for u in users:
                 active = (st.session_state.chat_with_user and st.session_state.chat_with_user['id'] == u['id'])
-                # Отображаем актуальное имя из профиля
-                if st.button(f"👤 {u['display_name']}", key=f"u_{u['id']}", use_container_width=True, type="primary" if active else "secondary"):
+                
+                # ЛОГИКА УВЕДОМЛЕНИЙ
+                count = unread_counts.get(u['id'], 0)
+                if count > 0:
+                    btn_label = f"🔴 {count} | {u['display_name']}"
+                else:
+                    btn_label = f"👤 {u['display_name']}"
+                
+                if st.button(btn_label, key=f"u_{u['id']}", use_container_width=True, type="primary" if active else "secondary"):
                     st.session_state.chat_with_user = u
                     st.session_state.chat_with_group = None
                     st.rerun()
@@ -224,9 +239,7 @@ def page_chats(profile):
             with st.expander("➕ Новая группа"):
                 with st.form("new_g"):
                     gn = st.text_input("Название")
-                    # Для создания группы тоже нужны ID
                     friends = get_chat_list_by_id(my_id)
-                    # Создаем словарь {username: id} для выбора
                     friend_map = {f"{u['display_name']} (@{u['username']})": u['id'] for u in friends}
                     sel_names = st.multiselect("Участники", list(friend_map.keys()))
                     
@@ -234,11 +247,9 @@ def page_chats(profile):
                         try:
                             r = supabase.table("groups").insert({"name": gn}).execute()
                             gid = r.data[0]['id']
-                            # Добавляем участников по ID
                             mems = [{"group_id": gid, "user_id": my_id, "username": profile['username']}]
                             for name in sel_names:
                                 uid = friend_map[name]
-                                # Находим username для обратной совместимости
                                 uname = next(u['username'] for u in friends if u['id'] == uid)
                                 mems.append({"group_id": gid, "user_id": uid, "username": uname})
                                 
@@ -258,7 +269,6 @@ def page_chats(profile):
             
             render_messages(my_id, ttype, tobj)
             
-            # ВВОД
             if st.session_state.edit_msg_id:
                 st.info("✏️ Редактирование")
                 with st.form("edit"):
@@ -277,10 +287,9 @@ def page_chats(profile):
                     with c_btn: 
                         if st.form_submit_button("➤", use_container_width=True) and txt.strip():
                             if ttype == 'user':
-                                # ВАЖНО: ОТПРАВЛЯЕМ С sender_id и recipient_id
                                 supabase.table("direct_messages").insert({
                                     "sender_id": my_id,
-                                    "sender_username": profile['username'], # Оставляем для истории
+                                    "sender_username": profile['username'],
                                     "recipient_id": tobj['id'],
                                     "recipient_username": tobj['username'],
                                     "content": txt.strip()
@@ -288,7 +297,7 @@ def page_chats(profile):
                             else:
                                 supabase.table("group_messages").insert({
                                     "group_id": tobj['id'],
-                                    "sender_id": my_id, # Добавляем ID отправителя
+                                    "sender_id": my_id,
                                     "sender_username": profile['username'],
                                     "content": txt.strip()
                                 }).execute()
@@ -313,7 +322,6 @@ def page_profile(profile):
         
         if st.form_submit_button("Сохранить"):
             try:
-                # Теперь обновляем без страха, связи Foreign Key мы удалили в SQL
                 supabase.table("profiles").update({"display_name": dn, "username": un}).eq("id", st.session_state.user.id).execute()
                 get_profile_cached.clear()
                 st.success("Сохранено!")
