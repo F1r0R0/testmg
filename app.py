@@ -64,13 +64,21 @@ def inject_custom_css():
         .stButton button:hover {{ filter: brightness(1.2); }}
         .stTextInput input {{ background-color: {t['input_bg']} !important; color: {t['text_color']} !important; border: 1px solid {t['border']} !important; border-radius: 12px !important; }}
         
-        /* Вкладки */
         .stTabs [data-baseweb="tab-list"] {{ gap: 10px; }}
         .stTabs [data-baseweb="tab"] {{ background-color: {t['input_bg']}; border-radius: 8px; padding: 5px 15px; color: {t['text_color']}; }}
         .stTabs [aria-selected="true"] {{ background-color: {t['primary']} !important; color: white !important; }}
         
-        /* Пузыри сообщений (Без контейнера скролла в CSS, теперь это делает Streamlit) */
-        .bubble {{ padding: 8px 14px; border-radius: 16px; font-size: 15px; line-height: 1.5; box-shadow: 0 1px 2px rgba(0,0,0,0.1); display: inline-block; max-width: 100%; word-wrap: break-word; }}
+        /* СТИЛИ ПУЗЫРЕЙ */
+        .bubble {{ 
+            padding: 8px 14px; 
+            border-radius: 16px; 
+            font-size: 15px; 
+            line-height: 1.5; 
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1); 
+            display: inline-block; 
+            max-width: 100%; 
+            word-wrap: break-word; 
+        }}
         .bubble-me {{ background: {t['bubble_me']}; color: {text_me}; border-bottom-right-radius: 2px; }}
         .bubble-other {{ background: {t['bubble_other']}; color: {text_other}; border-bottom-left-radius: 2px; }}
         
@@ -123,13 +131,13 @@ def get_unread_counts(my_id):
         return {}
     except: return {}
 
-# --- 5. ФРАГМЕНТ СООБЩЕНИЙ (С КНОПКАМИ!) ---
+# --- 5. ФРАГМЕНТ СООБЩЕНИЙ (С КНОПКАМИ И ИСПРАВЛЕННЫМ HTML) ---
 
-@st.fragment(run_every=5) # Чуть реже обновляем, чтобы кнопки не мигали
+@st.fragment(run_every=5)
 def render_messages_with_buttons(my_id, target_type, target_obj):
     messages = []
     
-    # 1. Загрузка данных
+    # Загрузка
     if target_type == 'user':
         target_id = target_obj['id']
         try: supabase.table("direct_messages").update({"is_read": True}).eq("recipient_id", my_id).eq("sender_id", target_id).eq("is_read", False).execute()
@@ -149,77 +157,54 @@ def render_messages_with_buttons(my_id, target_type, target_obj):
         st.caption("Нет сообщений.")
         return
 
-    # Разворачиваем для отображения сверху вниз
     messages.reverse()
 
-    # 2. Отрисовка в нативном контейнере
-    # Используем st.container(height=...) для скролла, это позволяет юзать st.button
-    with st.container(height=500, border=False):
+    # Отрисовка
+    # ИСПОЛЬЗУЕМ st.container для скролла, чтобы кнопки работали
+    with st.container(height=550, border=False):
         for m in messages:
+            # Получаем ID, если его нет - считаем None
             sender_id = m.get('sender_id') 
             is_me = (sender_id == my_id)
             
-            # Оформление мета-данных
+            content = m['content']
             status_icon = ""
             if is_me and target_type == 'user':
                 status_icon = "✓✓" if m.get('is_read') else "✓"
             is_edited = "(ред.)" if m.get('is_edited') else ""
             
-            # Текст сообщения
-            content = m['content']
-            
-            # --- ВЕРСТКА СООБЩЕНИЯ ---
             if is_me:
-                # МОЁ СООБЩЕНИЕ (Справа + Меню)
+                # === МОЁ СООБЩЕНИЕ ===
                 col_spacer, col_bubble, col_menu = st.columns([0.2, 0.7, 0.1])
                 
                 with col_bubble:
-                    # Рисуем пузырь через HTML
-                    bub_cls = "bubble-me"
-                    html = f"""
-                    <div style="text-align: right;">
-                        <div class="bubble {bub_cls}" style="text-align: left;">
-                            {content}
-                            <div class="msg-meta" style="color: rgba(255,255,255,0.7);">{is_edited} {status_icon}</div>
-                        </div>
-                    </div>
-                    """
+                    # ВАЖНО: Весь HTML в одну строку без отступов, чтобы не ломался
+                    html = f'<div style="text-align:right;"><div class="bubble bubble-me" style="text-align:left;">{content}<div class="msg-meta" style="color:rgba(255,255,255,0.7);">{is_edited} {status_icon}</div></div></div>'
                     st.markdown(html, unsafe_allow_html=True)
                 
                 with col_menu:
-                    # КНОПКИ РЕДАКТИРОВАНИЯ (Поповер)
+                    # Поповер с кнопками
                     with st.popover("⋮", use_container_width=True):
-                        if st.button("✏️ Изм.", key=f"ed_{m['id']}"):
+                        if st.button("✏️", key=f"ed_{m['id']}"):
                             st.session_state.edit_msg_id = m['id']
                             st.rerun()
-                        if st.button("🗑️ Удал.", key=f"del_{m['id']}"):
-                            # Удаляем из базы
+                        if st.button("🗑️", key=f"del_{m['id']}"):
                             table = "direct_messages" if target_type == 'user' else "group_messages"
                             supabase.table(table).delete().eq("id", m['id']).execute()
                             st.toast("Удалено")
                             st.rerun()
 
             else:
-                # ЧУЖОЕ СООБЩЕНИЕ (Слева)
+                # === ЧУЖОЕ СООБЩЕНИЕ ===
                 col_bubble, col_spacer = st.columns([0.8, 0.2])
                 with col_bubble:
-                    bub_cls = "bubble-other"
-                    # Имя отправителя для групп
-                    sender_name = ""
+                    sender_label = ""
                     if target_type == 'group':
                         primary_col = THEMES[st.session_state.theme]['primary']
                         name = m.get('sender_username', 'User')
-                        sender_name = f"<div style='font-size:11px; font-weight:bold; color:{primary_col}; margin-bottom:2px;'>{name}</div>"
+                        sender_label = f"<div style='font-size:11px; font-weight:bold; color:{primary_col}; margin-bottom:2px;'>{name}</div>"
                     
-                    html = f"""
-                    <div style="text-align: left;">
-                        <div class="bubble {bub_cls}">
-                            {sender_name}
-                            {content}
-                            <div class="msg-meta">{is_edited}</div>
-                        </div>
-                    </div>
-                    """
+                    html = f'<div style="text-align:left;"><div class="bubble bubble-other">{sender_label}{content}<div class="msg-meta">{is_edited}</div></div></div>'
                     st.markdown(html, unsafe_allow_html=True)
 
 
@@ -286,10 +271,9 @@ def page_chats(profile):
             title = tobj['name'] if ttype == 'group' else tobj['display_name']
             st.markdown(f"<h3 style='margin-top:0;'>{title}</h3>", unsafe_allow_html=True)
             
-            # --- ВЫЗОВ ФРАГМЕНТА С КНОПКАМИ ---
             render_messages_with_buttons(my_id, ttype, tobj)
             
-            # --- ПОЛЕ ВВОДА (ВНИЗУ) ---
+            # --- ПОЛЕ ВВОДА ---
             st.write("") # Отступ
             
             if st.session_state.edit_msg_id:
@@ -318,6 +302,7 @@ def page_chats(profile):
                                     "content": txt.strip()
                                 }).execute()
                             else:
+                                # ТЕПЕРЬ ТУТ ЕСТЬ sender_id
                                 supabase.table("group_messages").insert({
                                     "group_id": tobj['id'], "sender_id": my_id, "sender_username": profile['username'],
                                     "content": txt.strip()
@@ -341,6 +326,7 @@ def page_profile(profile):
         un = st.text_input("Юзернейм (@)", value=profile['username']).strip()
         if st.form_submit_button("Сохранить"):
             try:
+                # Ошибок не будет, т.к. мы удалили Constraints в SQL
                 supabase.table("profiles").update({"display_name": dn, "username": un}).eq("id", st.session_state.user.id).execute()
                 get_profile_cached.clear()
                 st.success("Сохранено!")
