@@ -55,7 +55,7 @@ def inject_custom_css():
     css = f"""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
-        html, body, [class*="css"] {{ font-family: 'Roboto', sans-serif; overflow: hidden; }}
+        html, body, [class*="css"] {{ font-family: 'Roboto', sans-serif; }}
         #MainMenu, footer {{visibility: hidden;}}
         .stApp {{ background-color: {t['bg_color']}; }}
         section[data-testid="stSidebar"] {{ background-color: {t['sidebar_bg']}; border-right: 1px solid {t['border']}; }}
@@ -63,22 +63,17 @@ def inject_custom_css():
         .stButton button {{ border-radius: 10px !important; border: none !important; background-color: {t['input_bg']} !important; color: {t['text_color']} !important; }}
         .stButton button:hover {{ filter: brightness(1.2); }}
         .stTextInput input {{ background-color: {t['input_bg']} !important; color: {t['text_color']} !important; border: 1px solid {t['border']} !important; border-radius: 12px !important; }}
+        
+        /* Вкладки */
         .stTabs [data-baseweb="tab-list"] {{ gap: 10px; }}
         .stTabs [data-baseweb="tab"] {{ background-color: {t['input_bg']}; border-radius: 8px; padding: 5px 15px; color: {t['text_color']}; }}
         .stTabs [aria-selected="true"] {{ background-color: {t['primary']} !important; color: white !important; }}
         
-        /* СКРОЛЛ ЧАТА */
-        .msg-container {{ height: 68vh; overflow-y: auto; display: flex; flex-direction: column-reverse; gap: 8px; padding-right: 10px; padding-bottom: 10px; }}
-        .msg-container::-webkit-scrollbar {{ width: 6px; }}
-        .msg-container::-webkit-scrollbar-track {{ background: transparent; }}
-        .msg-container::-webkit-scrollbar-thumb {{ background: {t['border']}; border-radius: 3px; }}
-        
-        .msg-row {{ display: flex; width: 100%; }}
-        .row-me {{ justify-content: flex-end; }}
-        .row-other {{ justify-content: flex-start; }}
-        .bubble {{ max-width: 75%; padding: 8px 14px; border-radius: 16px; font-size: 15px; line-height: 1.5; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }}
+        /* Пузыри сообщений (Без контейнера скролла в CSS, теперь это делает Streamlit) */
+        .bubble {{ padding: 8px 14px; border-radius: 16px; font-size: 15px; line-height: 1.5; box-shadow: 0 1px 2px rgba(0,0,0,0.1); display: inline-block; max-width: 100%; word-wrap: break-word; }}
         .bubble-me {{ background: {t['bubble_me']}; color: {text_me}; border-bottom-right-radius: 2px; }}
         .bubble-other {{ background: {t['bubble_other']}; color: {text_other}; border-bottom-left-radius: 2px; }}
+        
         .msg-meta {{ font-size: 11px; margin-top: 4px; display: flex; justify-content: flex-end; align-items: center; opacity: 0.7; gap: 5px; }}
     </style>
     """
@@ -122,43 +117,28 @@ def get_groups_by_id(my_id):
     except: return []
 
 def get_unread_counts(my_id):
-    """Считает непрочитанные сообщения для каждого собеседника"""
     try:
-        # Берем все сообщения, где Я - получатель И is_read = false
-        res = supabase.table("direct_messages").select("sender_id")\
-            .eq("recipient_id", my_id)\
-            .eq("is_read", False).execute()
-        
-        # Считаем количество для каждого sender_id
-        if res.data:
-            # Создаем словарь {sender_id: count}
-            counts = Counter([msg['sender_id'] for msg in res.data])
-            return counts
+        res = supabase.table("direct_messages").select("sender_id").eq("recipient_id", my_id).eq("is_read", False).execute()
+        if res.data: return Counter([msg['sender_id'] for msg in res.data])
         return {}
     except: return {}
 
-# --- 5. ФРАГМЕНТ СООБЩЕНИЙ ---
+# --- 5. ФРАГМЕНТ СООБЩЕНИЙ (С КНОПКАМИ!) ---
 
-@st.fragment(run_every=3)
-def render_messages(my_id, target_type, target_obj):
+@st.fragment(run_every=5) # Чуть реже обновляем, чтобы кнопки не мигали
+def render_messages_with_buttons(my_id, target_type, target_obj):
     messages = []
     
+    # 1. Загрузка данных
     if target_type == 'user':
         target_id = target_obj['id']
-        # Отмечаем прочитанным при открытии
-        try: supabase.table("direct_messages").update({"is_read": True})\
-            .eq("recipient_id", my_id).eq("sender_id", target_id).eq("is_read", False).execute()
+        try: supabase.table("direct_messages").update({"is_read": True}).eq("recipient_id", my_id).eq("sender_id", target_id).eq("is_read", False).execute()
         except: pass
-        
         try:
-            res = supabase.table("direct_messages").select("*")\
-                .or_(f"and(sender_id.eq.{my_id},recipient_id.eq.{target_id}),and(sender_id.eq.{target_id},recipient_id.eq.{my_id})")\
-                .order("created_at", desc=True).limit(50).execute()
+            res = supabase.table("direct_messages").select("*").or_(f"and(sender_id.eq.{my_id},recipient_id.eq.{target_id}),and(sender_id.eq.{target_id},recipient_id.eq.{my_id})").order("created_at", desc=True).limit(50).execute()
             messages = res.data
         except: pass
-
     else:
-        # Группы
         gid = target_obj['id']
         try:
             res = supabase.table("group_messages").select("*").eq("group_id", gid).order("created_at", desc=True).limit(50).execute()
@@ -169,30 +149,78 @@ def render_messages(my_id, target_type, target_obj):
         st.caption("Нет сообщений.")
         return
 
-    html_content = '<div class="msg-container">'
-    for m in messages:
-        sender_id = m.get('sender_id') 
-        is_me = (sender_id == my_id)
-        
-        row_cls = "row-me" if is_me else "row-other"
-        bub_cls = "bubble-me" if is_me else "bubble-other"
-        
-        sender_div = ""
-        if target_type == 'group' and not is_me:
-            primary_col = THEMES[st.session_state.theme]['primary']
-            name_show = m.get('sender_username', 'User')
-            sender_div = f"<div style='font-size:12px; color:{primary_col}; font-weight:bold; margin-bottom:2px;'>{name_show}</div>"
-        
-        status_span = ""
-        if is_me and target_type == 'user':
-            icon = "✓✓" if m.get('is_read') else "✓"
-            status_span = f"<span>{icon}</span>"
-        edit_span = "<span>(ред.)</span>" if m.get('is_edited') else ""
-        
-        html_content += f'<div class="msg-row {row_cls}"><div class="bubble {bub_cls}">{sender_div}{m["content"]}<div class="msg-meta">{edit_span} {status_span}</div></div></div>'
+    # Разворачиваем для отображения сверху вниз
+    messages.reverse()
 
-    html_content += '</div>'
-    st.markdown(html_content, unsafe_allow_html=True)
+    # 2. Отрисовка в нативном контейнере
+    # Используем st.container(height=...) для скролла, это позволяет юзать st.button
+    with st.container(height=500, border=False):
+        for m in messages:
+            sender_id = m.get('sender_id') 
+            is_me = (sender_id == my_id)
+            
+            # Оформление мета-данных
+            status_icon = ""
+            if is_me and target_type == 'user':
+                status_icon = "✓✓" if m.get('is_read') else "✓"
+            is_edited = "(ред.)" if m.get('is_edited') else ""
+            
+            # Текст сообщения
+            content = m['content']
+            
+            # --- ВЕРСТКА СООБЩЕНИЯ ---
+            if is_me:
+                # МОЁ СООБЩЕНИЕ (Справа + Меню)
+                col_spacer, col_bubble, col_menu = st.columns([0.2, 0.7, 0.1])
+                
+                with col_bubble:
+                    # Рисуем пузырь через HTML
+                    bub_cls = "bubble-me"
+                    html = f"""
+                    <div style="text-align: right;">
+                        <div class="bubble {bub_cls}" style="text-align: left;">
+                            {content}
+                            <div class="msg-meta" style="color: rgba(255,255,255,0.7);">{is_edited} {status_icon}</div>
+                        </div>
+                    </div>
+                    """
+                    st.markdown(html, unsafe_allow_html=True)
+                
+                with col_menu:
+                    # КНОПКИ РЕДАКТИРОВАНИЯ (Поповер)
+                    with st.popover("⋮", use_container_width=True):
+                        if st.button("✏️ Изм.", key=f"ed_{m['id']}"):
+                            st.session_state.edit_msg_id = m['id']
+                            st.rerun()
+                        if st.button("🗑️ Удал.", key=f"del_{m['id']}"):
+                            # Удаляем из базы
+                            table = "direct_messages" if target_type == 'user' else "group_messages"
+                            supabase.table(table).delete().eq("id", m['id']).execute()
+                            st.toast("Удалено")
+                            st.rerun()
+
+            else:
+                # ЧУЖОЕ СООБЩЕНИЕ (Слева)
+                col_bubble, col_spacer = st.columns([0.8, 0.2])
+                with col_bubble:
+                    bub_cls = "bubble-other"
+                    # Имя отправителя для групп
+                    sender_name = ""
+                    if target_type == 'group':
+                        primary_col = THEMES[st.session_state.theme]['primary']
+                        name = m.get('sender_username', 'User')
+                        sender_name = f"<div style='font-size:11px; font-weight:bold; color:{primary_col}; margin-bottom:2px;'>{name}</div>"
+                    
+                    html = f"""
+                    <div style="text-align: left;">
+                        <div class="bubble {bub_cls}">
+                            {sender_name}
+                            {content}
+                            <div class="msg-meta">{is_edited}</div>
+                        </div>
+                    </div>
+                    """
+                    st.markdown(html, unsafe_allow_html=True)
 
 
 # --- 6. СТРАНИЦЫ ---
@@ -204,8 +232,6 @@ def page_chats(profile):
     with c_left:
         st.subheader("💬 Чаты")
         tab_dm, tab_grp = st.tabs(["Личные", "Группы"])
-        
-        # Получаем счетчики непрочитанных (словарь)
         unread_counts = get_unread_counts(my_id)
         
         with tab_dm:
@@ -213,15 +239,10 @@ def page_chats(profile):
             if not users: st.caption("Пусто")
             for u in users:
                 active = (st.session_state.chat_with_user and st.session_state.chat_with_user['id'] == u['id'])
-                
-                # ЛОГИКА УВЕДОМЛЕНИЙ
                 count = unread_counts.get(u['id'], 0)
-                if count > 0:
-                    btn_label = f"🔴 {count} | {u['display_name']}"
-                else:
-                    btn_label = f"👤 {u['display_name']}"
+                label = f"🔴 {count} | {u['display_name']}" if count > 0 else f"👤 {u['display_name']}"
                 
-                if st.button(btn_label, key=f"u_{u['id']}", use_container_width=True, type="primary" if active else "secondary"):
+                if st.button(label, key=f"u_{u['id']}", use_container_width=True, type="primary" if active else "secondary"):
                     st.session_state.chat_with_user = u
                     st.session_state.chat_with_group = None
                     st.rerun()
@@ -242,7 +263,6 @@ def page_chats(profile):
                     friends = get_chat_list_by_id(my_id)
                     friend_map = {f"{u['display_name']} (@{u['username']})": u['id'] for u in friends}
                     sel_names = st.multiselect("Участники", list(friend_map.keys()))
-                    
                     if st.form_submit_button("Создать"):
                         try:
                             r = supabase.table("groups").insert({"name": gn}).execute()
@@ -252,7 +272,6 @@ def page_chats(profile):
                                 uid = friend_map[name]
                                 uname = next(u['username'] for u in friends if u['id'] == uid)
                                 mems.append({"group_id": gid, "user_id": uid, "username": uname})
-                                
                             supabase.table("group_members").insert(mems).execute()
                             st.toast("Создано!")
                             st.rerun()
@@ -267,17 +286,23 @@ def page_chats(profile):
             title = tobj['name'] if ttype == 'group' else tobj['display_name']
             st.markdown(f"<h3 style='margin-top:0;'>{title}</h3>", unsafe_allow_html=True)
             
-            render_messages(my_id, ttype, tobj)
+            # --- ВЫЗОВ ФРАГМЕНТА С КНОПКАМИ ---
+            render_messages_with_buttons(my_id, ttype, tobj)
+            
+            # --- ПОЛЕ ВВОДА (ВНИЗУ) ---
+            st.write("") # Отступ
             
             if st.session_state.edit_msg_id:
                 st.info("✏️ Редактирование")
                 with st.form("edit"):
-                    nt = st.text_input("Текст")
-                    if st.form_submit_button("Сохранить"):
-                        supabase.table("direct_messages").update({"content": nt, "is_edited": True}).eq("id", st.session_state.edit_msg_id).execute()
+                    nt = st.text_input("Новый текст")
+                    c1, c2 = st.columns(2)
+                    if c1.form_submit_button("Сохранить"):
+                        table = "direct_messages" if ttype == 'user' else "group_messages"
+                        supabase.table(table).update({"content": nt, "is_edited": True}).eq("id", st.session_state.edit_msg_id).execute()
                         st.session_state.edit_msg_id = None
                         st.rerun()
-                    if st.form_submit_button("Отмена"):
+                    if c2.form_submit_button("Отмена"):
                         st.session_state.edit_msg_id = None
                         st.rerun()
             else:
@@ -288,17 +313,13 @@ def page_chats(profile):
                         if st.form_submit_button("➤", use_container_width=True) and txt.strip():
                             if ttype == 'user':
                                 supabase.table("direct_messages").insert({
-                                    "sender_id": my_id,
-                                    "sender_username": profile['username'],
-                                    "recipient_id": tobj['id'],
-                                    "recipient_username": tobj['username'],
+                                    "sender_id": my_id, "sender_username": profile['username'],
+                                    "recipient_id": tobj['id'], "recipient_username": tobj['username'],
                                     "content": txt.strip()
                                 }).execute()
                             else:
                                 supabase.table("group_messages").insert({
-                                    "group_id": tobj['id'],
-                                    "sender_id": my_id,
-                                    "sender_username": profile['username'],
+                                    "group_id": tobj['id'], "sender_id": my_id, "sender_username": profile['username'],
                                     "content": txt.strip()
                                 }).execute()
                             st.rerun()
@@ -317,9 +338,7 @@ def page_profile(profile):
     st.title("👤 Профиль")
     with st.form("prof_upd"):
         dn = st.text_input("Отображаемое имя", value=profile['display_name'])
-        un_val = profile['username'] if profile['username'] else ""
-        un = st.text_input("Юзернейм (@)", value=un_val).strip()
-        
+        un = st.text_input("Юзернейм (@)", value=profile['username']).strip()
         if st.form_submit_button("Сохранить"):
             try:
                 supabase.table("profiles").update({"display_name": dn, "username": un}).eq("id", st.session_state.user.id).execute()
@@ -327,8 +346,7 @@ def page_profile(profile):
                 st.success("Сохранено!")
                 time.sleep(1)
                 st.rerun()
-            except Exception as e:
-                st.error(f"Ошибка обновления: {e}")
+            except Exception as e: st.error(f"Ошибка: {e}")
 
 def page_search(profile):
     st.title("🔍 Поиск")
@@ -338,11 +356,8 @@ def page_search(profile):
     
     if submitted:
         r = supabase.table("profiles").select("*").eq("username", q).execute()
-        if r.data:
-            st.session_state.search_res = r.data[0]
-        else:
-            st.session_state.search_res = None
-            st.error("Никого не нашли")
+        if r.data: st.session_state.search_res = r.data[0]
+        else: st.session_state.search_res = None; st.error("Никого не нашли")
 
     if st.session_state.search_res:
         f = st.session_state.search_res
