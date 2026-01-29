@@ -1,105 +1,96 @@
 # src/database.py
-import streamlit as st
-from supabase import create_client
-from collections import Counter
+import os
+from supabase import create_client, Client
 
-@st.cache_resource
-def get_supabase():
+# --- 1. ЧТЕНИЕ КОНФИГА (TOML) ---
+try:
+    import tomllib  # Для Python 3.11+
+except ImportError:
+    import tomli as tomllib  # Для старых версий (pip install tomli)
+
+# Проверяем, существует ли файл
+if not os.path.exists("keys.toml"):
+    raise FileNotFoundError("Файл keys.toml не найден! Создайте его и добавьте туда url и key.")
+
+with open("keys.toml", "rb") as f:
+    config = tomllib.load(f)
+    
+SUPABASE_URL = config["supabase"]["url"]
+SUPABASE_KEY = config["supabase"]["key"]
+
+# --- 2. ИНИЦИАЛИЗАЦИЯ SUPABASE ---
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# --- 3. ФУНКЦИИ (Очищенные от Streamlit) ---
+
+def get_chat_list_by_id(user_id):
+    """Получает список пользователей, с кем есть диалог"""
     try:
-        return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-    except:
-        st.error("Настройте .streamlit/secrets.toml")
-        st.stop()
-
-supabase = get_supabase()
-
-# --- ФУНКЦИИ ---
-
-@st.cache_data(ttl=60)
-def get_profile_cached(user_id):
-    try:
-        res = supabase.table("profiles").select("*").eq("id", user_id).execute()
-        return res.data[0] if res.data else None
-    except: return None
-
-def update_heartbeat(user_id):
-    try: supabase.table("profiles").update({"last_seen": "now()"}).eq("id", user_id).execute()
-    except: pass
-
-def get_chat_list_by_id(my_id):
-    """
-    Загружает список чатов, исключая те, которые пользователь удалил.
-    """
-    try:
-        # Ищем сообщения, где я отправитель И они мне видны
-        sent = supabase.table("direct_messages").select("recipient_id")\
-            .eq("sender_id", my_id).eq("visible_to_sender", True).execute()
-            
-        # Ищем сообщения, где я получатель И они мне видны
-        received = supabase.table("direct_messages").select("sender_id")\
-            .eq("recipient_id", my_id).eq("visible_to_recipient", True).execute()
-            
+        # Находим уникальных собеседников в direct_messages
+        # (Эта логика упрощена, в идеале нужен отдельный запрос или view)
+        res = supabase.table("direct_messages").select("sender_id, recipient_id")\
+            .or_(f"sender_id.eq.{user_id},recipient_id.eq.{user_id}").execute()
+        
         ids = set()
-        for x in sent.data: 
-            if x['recipient_id']: ids.add(x['recipient_id'])
-        for x in received.data: 
-            if x['sender_id']: ids.add(x['sender_id'])
+        for row in res.data:
+            if row['sender_id'] != user_id: ids.add(row['sender_id'])
+            if row['recipient_id'] != user_id: ids.add(row['recipient_id'])
             
         if not ids: return []
-        profiles = supabase.table("profiles").select("*").in_("id", list(ids)).execute()
-        return profiles.data
-    except: return []
-
-def get_groups_by_id(my_id):
-    try:
-        m = supabase.table("group_members").select("group_id").eq("user_id", my_id).execute()
-        if not m.data: return []
-        ids = [x['group_id'] for x in m.data]
-        return supabase.table("groups").select("*").in_("id", ids).execute().data
-    except: return []
-
-def get_unread_counts(my_id):
-    try:
-        # Считаем только видимые непрочитанные
-        res = supabase.table("direct_messages").select("sender_id")\
-            .eq("recipient_id", my_id)\
-            .eq("is_read", False)\
-            .eq("visible_to_recipient", True).execute() # Важно: только если сообщение не удалено
-        if res.data: return Counter([msg['sender_id'] for msg in res.data])
-        return {}
-    except: return {}
-    # ... (предыдущий код в src/database.py) ...
+        
+        # Получаем профили этих людей
+        users_res = supabase.table("profiles").select("*").in_("id", list(ids)).execute()
+        return users_res.data
+    except Exception as e:
+        print(f"Error getting chats: {e}")
+        return []
 
 def toggle_reaction(table_name, msg_id, user_id, emoji):
-    """
-    Ставит или снимает реакцию.
-    Логика: Если этот юзер уже ставил этот смайл -> убрать. Если нет -> добавить.
-    """
+    """Ставит/убирает реакцию"""
     try:
-        # 1. Получаем текущие реакции
         res = supabase.table(table_name).select("reactions").eq("id", msg_id).execute()
         if not res.data: return
         
         current_reactions = res.data[0].get('reactions') or {}
-        
-        # 2. Обновляем список пользователей для этого смайла
         users_list = current_reactions.get(emoji, [])
         
         if user_id in users_list:
-            users_list.remove(user_id) # Убираем лайк
+            users_list.remove(user_id)
         else:
-            users_list.append(user_id) # Ставим лайк
+            users_list.append(user_id)
             
-        # Если список пуст, удаляем ключ смайла, иначе сохраняем
         if not users_list:
-            if emoji in current_reactions:
-                del current_reactions[emoji]
+            if emoji in current_reactions: del current_reactions[emoji]
         else:
             current_reactions[emoji] = users_list
             
-        # 3. Записываем обратно в базу
         supabase.table(table_name).update({"reactions": current_reactions}).eq("id", msg_id).execute()
         return True
     except Exception as e:
         print(f"Error reaction: {e}")
         return False
+
+def auth_login(email, password):
+    """Вход пользователя"""
+    try:
+        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+        return res.user, None
+    except Exception as e:
+        return None, str(e)
+
+def auth_register(email, password, username, display_name):
+    """Регистрация + создание профиля в таблице profiles"""
+    try:
+        # 1. Регистрация в Auth
+        res = supabase.auth.sign_up({"email": email, "password": password})
+        user = res.user
+        if user:
+            # 2. Создаем запись в таблице profiles
+            supabase.table("profiles").insert({
+                "id": user.id,
+                "username": username,
+                "display_name": display_name
+            }).execute()
+        return user, None
+    except Exception as e:
+        return None, str(e)
