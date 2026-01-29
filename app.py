@@ -13,7 +13,7 @@ if "user" not in st.session_state: st.session_state.user = None
 if "chat_with_user" not in st.session_state: st.session_state.chat_with_user = None
 if "chat_with_group" not in st.session_state: st.session_state.chat_with_group = None
 if "edit_msg_id" not in st.session_state: st.session_state.edit_msg_id = None
-if "theme" not in st.session_state: st.session_state.theme = "Midnight Blue"
+if "theme" not in st.session_state: st.session_state.theme = "Midnight Blue (Default)"
 if "search_res" not in st.session_state: st.session_state.search_res = None
 
 # Загрузка CSS
