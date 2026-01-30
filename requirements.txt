@@ -1,2 +1,3 @@
-streamlit
-supabase   
+flet==0.28.3
+supabase
+tomli
