@@ -163,6 +163,16 @@ def main(page: ft.Page):
     import atexit
     atexit.register(lambda: shutil.rmtree(temp_upload_dir, ignore_errors=True))
 
-    show_login_screen()
+    if __name__ == "__main__":
+    # Получаем порт, который выдал Render (или 8000 для теста на ПК)
+     port = int(os.environ.get("PORT", 8000))
+    
+    # Запускаем приложение напрямую
+    ft.app(
+        target=main,
+        view=ft.AppView.WEB_BROWSER, # Говорим, что это Веб
+        port=port,                   # Порт от Render
+        host="0.0.0.0"               # Слушаем все IP (обязательно для Render)
+    )
 
 ft.app(target=main)
